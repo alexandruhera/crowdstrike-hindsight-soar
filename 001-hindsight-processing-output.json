@@ -50,5 +50,7 @@
       "description": "Timestamp of the forensic analysis execution."
     }
   },
-  "required": ["has_processing_errors"]
+  "required": [
+    "has_processing_errors"
+  ]
 }

@@ -32,5 +32,11 @@
       "description": "The browser targeted for forensic analysis."
     }
   },
-  "required": ["forensic_results", "forensic_analysis_path", "system_hostname", "analysis_timestamp", "selected_browser"]
+  "required": [
+    "forensic_results",
+    "forensic_analysis_path",
+    "system_hostname",
+    "analysis_timestamp",
+    "selected_browser"
+  ]
 }

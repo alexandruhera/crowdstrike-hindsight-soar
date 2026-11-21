@@ -22,5 +22,7 @@
       "description": "Path where the hindsight binary is put and executed from. This is also where we store the resulting collection files."
     }
   },
-  "required": ["has_processing_errors"]
+  "required": [
+    "has_processing_errors"
+  ]
 }

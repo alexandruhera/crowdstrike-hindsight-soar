@@ -1,17 +1,15 @@
 param (
-    [string]$json_input  # JSON input dynamically provided from upstream
+    [string]$json_input
 )
 
-# Convert JSON input
 $json_data = $json_input | ConvertFrom-Json
 $forensic_analysis_path = $json_data.forensic_analysis_path
 
-# Initialize error tracking
 $has_processing_errors = $false
 $exception_messages = @()
 
 try {
-    # Ensure the forensic analysis directory is clean and exists
+    # Fusion supplies the working directory used by the subsequent RTR actions.
     if (Test-Path -Path $forensic_analysis_path) {
         Remove-Item -Path $forensic_analysis_path -Recurse -Force -ErrorAction Stop
     }
@@ -20,7 +18,6 @@ try {
     $exception_messages += $_.Exception.Message
 }
 
-# Validate the forensic analysis directory exists
 $has_processing_errors = [bool]($exception_messages.Count)
 if ($has_processing_errors) {
     $json_output = [PSCustomObject]@{
@@ -33,4 +30,5 @@ if ($has_processing_errors) {
         "forensic_analysis_path" = $forensic_analysis_path
     }
 }
+
 $json_output | ConvertTo-Json -Depth 2
