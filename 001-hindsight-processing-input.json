@@ -30,5 +30,11 @@
       "description": "Hostname of the system on which the analysis is performed."
     }
   },
-  "required": ["forensic_analysis_path", "forensic_tool_path", "output_format", "selected_browser", "system_hostname"]
+  "required": [
+    "forensic_analysis_path",
+    "forensic_tool_path",
+    "output_format",
+    "selected_browser",
+    "system_hostname"
+  ]
 }

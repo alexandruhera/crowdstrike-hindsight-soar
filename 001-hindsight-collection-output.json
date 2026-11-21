@@ -6,7 +6,10 @@
       "type": "boolean",
       "title": "has_processing_errors",
       "description": "Indicates whether any errors occurred during execution.",
-	  "enum": [true, false]
+      "enum": [
+        true,
+        false
+      ]
     },
     "exception_messages": {
       "type": "array",
@@ -23,5 +26,7 @@
       "description": "Path to the generated ZIP archive containing forensic results."
     }
   },
-  "required": ["has_processing_errors"]
+  "required": [
+    "has_processing_errors"
+  ]
 }
