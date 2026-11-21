@@ -13,6 +13,8 @@ Ideal for:
 
 ## ⚙️ Workflow Overview
 
+[Follow the Falcon workflow and collection loop in two diagrams.](docs/workflow.md)
+
 This workflow is composed of six tightly integrated phases:
 
 1. **Platform Validation**  
