@@ -90,12 +90,22 @@ try {
     }
 
     # RTR executes separately from the interactive user's session.
-    $username = (Get-CimInstance Win32_ComputerSystem).UserName -replace '^.*\\', ''
-    if (-not $username) { throw 'No interactive Windows user was found.' }
-    $userProfiles = @(Get-CimInstance Win32_UserProfile | Where-Object {
-        $_.LocalPath -and [IO.Path]::GetFileName($_.LocalPath) -eq $username
-    })
-    if ($userProfiles.Count -ne 1) { throw "Could not resolve a unique local profile for $username." }
+    $interactive = (Get-CimInstance Win32_ComputerSystem).UserName
+    if ($interactive -notmatch '^([^\\]+)\\([^\\]+)$') { throw 'Could not identify a domain-qualified interactive Windows user.' }
+    $domain = $Matches[1]
+    $name = $Matches[2]
+    # Both values originate from Windows. Escape quotes for a WQL string literal.
+    $domainFilter = $domain.Replace("'", "\'")
+    $nameFilter = $name.Replace("'", "\'")
+    $accounts = @(Get-CimInstance Win32_UserAccount -Filter "Domain = '$domainFilter' AND Name = '$nameFilter'" |
+        Where-Object { $_.Domain -eq $domain -and $_.Name -eq $name })
+    if ($accounts.Count -ne 1 -or $accounts[0].SID -notmatch '^S-1-\d+(?:-\d+)+$') {
+        throw "Could not resolve a unique Windows SID for $interactive."
+    }
+    $sid = $accounts[0].SID
+    $userProfiles = @(Get-CimInstance Win32_UserProfile -Filter "SID = '$sid'" |
+        Where-Object { $_.SID -eq $sid -and $_.LocalPath })
+    if ($userProfiles.Count -ne 1) { throw "Could not resolve a unique local profile for $interactive ($sid)." }
     $browserRoot = Join-Path $userProfiles[0].LocalPath $paths[$browser]
     $profiles = @(foreach ($entry in (Get-ChildItem -LiteralPath $browserRoot -Directory)) {
         if ($entry.Name -notmatch '^(Default|Profile\s\d+)$') { continue }
@@ -131,6 +141,9 @@ try {
             $tool.Directory.FullName -ine $directory.FullName -or ($tool.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
             throw 'Expected the deployed hindsight.exe in the prepared working directory.'
         }
+        if ([Environment]::OSVersion.Platform -eq 'Win32NT' -and (Get-ExecutionPolicy) -in @('AllSigned', 'Restricted')) {
+            throw 'Endpoint execution policy prevents starting the locally generated Hindsight worker.'
+        }
         $workerPath = Join-Path $directory.FullName "hindsight-worker-$runId.ps1"
         [IO.File]::WriteAllText($workerPath, $worker.ToString())
         $shell = if ($PSVersionTable.PSEdition -eq 'Desktop') { 'powershell.exe' }
@@ -148,8 +161,15 @@ try {
             $start.UseShellExecute = $false
             $start.CreateNoWindow = $true
             $start.EnvironmentVariables['HINDSIGHT_PROFILE_JOB'] = ($job | ConvertTo-Json -Compress)
-            $child = [Diagnostics.Process]::Start($start)
-            $child.Dispose()
+            # Give the detached child its own pipes so it cannot hold RTR stdout open.
+            $start.RedirectStandardOutput = $true
+            $start.RedirectStandardError = $true
+            try {
+                $child = [Diagnostics.Process]::Start($start)
+                $child.Dispose()
+            } catch {
+                throw "Could not start the Hindsight worker for $($profile.Name) (run $runId): $($_.Exception.Message)"
+            }
             $response.forensic_results += "$outputBase.$format"
         }
         $response.processing_status = 'started'

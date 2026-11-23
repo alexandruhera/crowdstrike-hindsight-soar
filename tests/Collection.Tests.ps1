@@ -95,4 +95,33 @@ Describe 'Fusion collection attempts' {
         $next.collection_status | Should -Be 'failed'
         $next.zip_file_path | Should -BeNullOrEmpty
     }
+    It 'rejects a substituted ZIP entry of the same name and length' {
+        [IO.File]::WriteAllText($file, 'original')
+        Write-Marker $file $id 'ready'
+        $published = Invoke-Collection
+        $published.collection_status | Should -Be 'ready'
+        $zip = [IO.Compression.ZipFile]::Open($published.zip_file_path, [IO.Compression.ZipArchiveMode]::Update)
+        try {
+            $entry = $zip.GetEntry([IO.Path]::GetFileName($file))
+            $stream = $entry.Open()
+            try {
+                $bytes = [Text.Encoding]::ASCII.GetBytes('tampered')
+                $stream.Write($bytes, 0, $bytes.Length)
+            } finally { $stream.Dispose() }
+        } finally { $zip.Dispose() }
+        $r = Invoke-Collection
+        $r.collection_status | Should -Be 'failed'
+        $r.has_processing_errors | Should -BeTrue
+        $r.zip_file_path | Should -BeNullOrEmpty
+    }
+    It 'reports compression failure with no published ZIP or staging file' {
+        [IO.File]::WriteAllText($file, 'evidence')
+        Write-Marker $file $id 'ready'
+        $exclusive = [IO.File]::Open($file, 'Open', 'ReadWrite', 'None')
+        try { $r = Invoke-Collection } finally { $exclusive.Dispose() }
+        $r.collection_status | Should -Be 'failed'
+        $r.has_processing_errors | Should -BeTrue
+        $r.zip_file_path | Should -BeNullOrEmpty
+        @(Get-ChildItem -LiteralPath $folder -Include '*.zip','*.tmp' -Recurse).Count | Should -Be 0
+    }
 }

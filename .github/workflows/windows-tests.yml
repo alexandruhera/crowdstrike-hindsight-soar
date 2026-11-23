@@ -31,8 +31,16 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python tests/test_schemas.py
 
+      - name: Observe open and closed Chrome profile timestamps
+        if: matrix.shell == 'pwsh'
+        run: |
+          python -m pip install playwright==1.62.0
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/probe_history_timestamp.py
+
       - name: Fetch and verify Hindsight v2026.11
         run: |
+          $ProgressPreference = 'SilentlyContinue'
           $url = 'https://github.com/RyanDFIR/hindsight/releases/download/v2026.11/hindsight.exe'
           $binary = Join-Path $env:RUNNER_TEMP 'hindsight.exe'
           Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $binary

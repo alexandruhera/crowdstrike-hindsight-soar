@@ -42,11 +42,15 @@ Omit the days field to process all discovered `Default` and `Profile N` director
 
 Retrieve the archive once, record the successful Get file result, then send a completion notification and clean up the execution directory. The operator can download the archive from the completed action in Falcon. Configure Slack with your tenant's connection. Keep notification failure distinct from retrieval failure so a messaging outage cannot discard the retrieval result.
 
+The worker runs as a separate PowerShell process under the endpoint policy. If an expected status file never appears, inspect the launch action and the host’s PowerShell or application-control logs for a blocked worker. Validate the script against your existing policy on the test endpoint.
+
 On loop exhaustion or failed retrieval, record the run ID and working directory and retain outputs for recovery. A collection retry for a run must use its original expected file list. Starting processing again creates a new run. A timed-out worker may still be writing.
 
 **Upgrade an existing workflow** by copying its action bindings to a new workflow version. Add the optional days mapping at the trigger and processing step, pass the run ID and result list to collection, and wire the status branches. Let earlier executions finish against their original collector. A list of paths from the historical processor lacks the completion information required by this collector. The [original workflow and screenshots](https://github.com/alexandruhera/crowdstrike-hindsight-soar/blob/7bf009c/README.md) remain available for comparison.
 
 ## Verification
+
+The Windows CI workflow runs Pester under Windows PowerShell 5.1 and PowerShell 7 and checks a synthetic visit in archives produced by the pinned Hindsight executable. [Windows test workflow](.github/workflows/windows-tests.yml) · [Synthetic fixture](tests/hindsight_fixture.py)
 
 Use the repository's Windows tests for the script entry points, file timestamps, asynchronous completion and generated archives. On a Falcon-managed test endpoint, verify a filtered run, an unfiltered run, no matches, a failed worker, loop exhaustion and failed retrieval before enabling the revised bindings. Check the signed-in identity, script policy, Slack result and cleanup order in that tenant. The diagrams document the bindings to configure. A Falcon workflow export is tenant-specific.
 

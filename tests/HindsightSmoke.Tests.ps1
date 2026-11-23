@@ -9,10 +9,15 @@ Describe 'Processing and collection with Hindsight v2026.11' -Skip:(-not $env:HI
         if ($LASTEXITCODE -ne 0) { throw 'Could not create the synthetic profile.' }
 
         # Supply the interactive identity that an RTR host would normally resolve via CIM.
-        function Get-CimInstance($ClassName) {
+        function Get-CimInstance($ClassName, $Filter) {
             switch ($ClassName) {
                 'Win32_ComputerSystem' { [pscustomobject]@{ UserName = 'LAB\ci-user' } }
-                'Win32_UserProfile'    { [pscustomobject]@{ LocalPath = $ciHome } }
+                'Win32_UserAccount' {
+                    [pscustomobject]@{ Domain = 'LAB'; Name = 'ci-user'; SID = 'S-1-5-21-111-222-333-1001' }
+                }
+                'Win32_UserProfile' {
+                    [pscustomobject]@{ LocalPath = $ciHome; SID = 'S-1-5-21-111-222-333-1001' }
+                }
                 default                { throw "Unexpected CIM class: $ClassName" }
             }
         }

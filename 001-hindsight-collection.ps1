@@ -72,7 +72,7 @@ function Get-CollectionResult($request) {
         }
     }
 
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
     $zipPath = Join-Path $directory.FullName "hindsight-$runId.zip"
     if (-not (Test-Path -LiteralPath $zipPath)) {
         # Each poll writes a private temporary ZIP. Only a fully closed archive is published.
@@ -109,6 +109,17 @@ function Get-CollectionResult($request) {
             $source = [IO.FileInfo]::new($files[$name])
             if ($null -eq $entry -or $entry.Length -ne $source.Length) {
                 throw "Archive verification failed for $name."
+            }
+            # A matching ZIP directory can still describe corrupt or substituted bytes.
+            $stream = $entry.Open()
+            try {
+                $archivedHash = (Get-FileHash -InputStream $stream -Algorithm SHA256).Hash
+            } finally {
+                $stream.Dispose()
+            }
+            $sourceHash = (Get-FileHash -LiteralPath $source.FullName -Algorithm SHA256).Hash
+            if ($sourceHash -ne $archivedHash) {
+                throw "The archive contents differ from the completed result for $name."
             }
         }
     } finally {

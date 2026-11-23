@@ -31,13 +31,22 @@ if test -f "$2/invalid"; then echo broken; else echo '{"ok":true}'; fi > "$4.jso
         & chmod +x $testTool
     }
 
-    function Invoke-TestProcessing($payload) {
+    function Invoke-TestProcessing($payload, [switch]$MissingSid) {
         function Get-Date { $clock }
-        function Get-CimInstance($ClassName) {
-            if ($ClassName -eq 'Win32_ComputerSystem') {
-                return [pscustomobject]@{ UserName = 'domain\analyst' }
+        function Get-CimInstance($ClassName, $Filter) {
+            $sid = 'S-1-5-21-111-222-333-1001'
+            switch ($ClassName) {
+                'Win32_ComputerSystem' { [pscustomobject]@{ UserName = 'domain\analyst' } }
+                'Win32_UserAccount' {
+                    if ($Filter -ne "Domain = 'domain' AND Name = 'analyst'") { throw 'Expected a fully qualified lookup.' }
+                    if (-not $MissingSid) { [pscustomobject]@{ Domain='domain'; Name='analyst'; SID=$sid } }
+                }
+                'Win32_UserProfile' {
+                    if ($Filter -eq "SID = '$sid'") { [pscustomobject]@{ LocalPath=$userRoot; SID=$sid } }
+                    else { [pscustomobject]@{ LocalPath=(Join-Path $fixture 'analyst'); SID='S-1-5-21-444-555-666-1001' } }
+                }
+                default { throw "Unexpected CIM class: $ClassName" }
             }
-            [pscustomobject]@{ LocalPath = $userRoot }
         }
         & $processingScript -json_input ($payload | ConvertTo-Json) | ConvertFrom-Json
     }
@@ -63,7 +72,7 @@ if test -f "$2/invalid"; then echo broken; else echo '{"ok":true}'; fi > "$4.jso
 Describe 'Hindsight processing action' {
     BeforeEach {
         $fixture = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
-        $userRoot = Join-Path $fixture 'analyst'
+        $userRoot = Join-Path $fixture 'analyst.DOMAIN'
         $browserRoot = Join-Path $userRoot 'AppData/Local/Google/Chrome/User Data'
         [void][IO.Directory]::CreateDirectory($browserRoot)
         $working = [IO.Directory]::CreateDirectory((Join-Path $fixture 'case [1]')).FullName
@@ -98,10 +107,37 @@ Describe 'Hindsight processing action' {
         @($markers | Where-Object status -eq 'failed').Count | Should -Be 2
         ($markers.message -join ' ') | Should -Match '11'
     }
+    It 'fails closed when the full account cannot be resolved even if a same-named profile exists' {
+        $other = Join-Path $fixture 'analyst/AppData/Local/Google/Chrome/User Data/Default'
+        [void][IO.Directory]::CreateDirectory($other)
+        $r = Invoke-TestProcessing $payload -MissingSid
+        $r.processing_status | Should -Be 'failed'
+        $r.exception_messages[0] | Should -Match 'SID'
+        @(Get-ChildItem -LiteralPath $working -Filter '*.status.json').Count | Should -Be 0
+    }
     It 'returns an explicit no-match for zero candidates' {
         $r = Invoke-TestProcessing $payload
         $r.processing_status | Should -Be 'no_match'
         $r.forensic_results.Count | Should -Be 0
+    }
+    It 'rejects a file access failure without launching a partial selection' {
+        $null = Add-TestProfile 'Default' $clock
+        $denied = Join-Path (Add-TestProfile 'Profile 1' $clock) 'History'
+        Mock Get-Item { throw [UnauthorizedAccessException]::new('Access to History was denied.') } -ParameterFilter {
+            $LiteralPath -eq $denied
+        }
+        $payload.profile_history_days = 7
+        $r = Invoke-TestProcessing $payload
+        $r.processing_status | Should -Be 'failed'
+        $r.exception_messages[0] | Should -Match 'denied'
+        @(Get-ChildItem -LiteralPath $working -Filter '*.status.json').Count | Should -Be 0
+    }
+    It 'returns failed if the deployed binary is missing' {
+        $null = Add-TestProfile 'Default' $clock
+        [IO.File]::Delete($exe)
+        $r = Invoke-TestProcessing $payload
+        $r.processing_status | Should -Be 'failed'
+        $r.has_processing_errors | Should -BeTrue
     }
     It 'rejects an invalid days input before launch' -ForEach @(0, -1, 1.5, '2', $null) {
         $null = Add-TestProfile 'Default' $clock
