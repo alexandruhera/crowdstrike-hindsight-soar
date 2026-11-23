@@ -48,9 +48,26 @@
       "type": "string",
       "title": "analysis_timestamp",
       "description": "Timestamp of the forensic analysis execution."
+    },
+    "processing_status": {
+      "type": "string",
+      "enum": [
+        "started",
+        "no_match",
+        "failed"
+      ],
+      "title": "Processing status",
+      "description": "Outcome of selecting profiles and launching the asynchronous workers."
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$",
+      "title": "Run ID",
+      "description": "Pass this value to collection to verify per-profile completion records."
     }
   },
   "required": [
-    "has_processing_errors"
+    "has_processing_errors",
+    "processing_status"
   ]
 }

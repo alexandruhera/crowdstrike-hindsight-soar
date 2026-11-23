@@ -8,7 +8,9 @@
         "type": "string"
       },
       "title": "forensic_results",
-      "description": "Flat array of file paths pointing to forensic result files."
+      "description": "Flat array of file paths pointing to forensic result files.",
+      "minItems": 1,
+      "uniqueItems": true
     },
     "forensic_analysis_path": {
       "type": "string",
@@ -30,6 +32,12 @@
       "type": "string",
       "title": "selected_browser",
       "description": "The browser targeted for forensic analysis."
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^[a-fA-F0-9]{32}$",
+      "title": "run_id",
+      "description": "Execution identifier returned by the processing action."
     }
   },
   "required": [
@@ -37,6 +45,7 @@
     "forensic_analysis_path",
     "system_hostname",
     "analysis_timestamp",
-    "selected_browser"
+    "selected_browser",
+    "run_id"
   ]
 }

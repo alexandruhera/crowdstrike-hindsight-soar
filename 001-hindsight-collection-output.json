@@ -5,7 +5,7 @@
     "has_processing_errors": {
       "type": "boolean",
       "title": "has_processing_errors",
-      "description": "Indicates whether any errors occurred during execution.",
+      "description": "False only when the archive is ready for retrieval.",
       "enum": [
         true,
         false
@@ -24,9 +24,20 @@
       "format": "localFilePath",
       "title": "zip_file_path",
       "description": "Path to the generated ZIP archive containing forensic results."
+    },
+    "collection_status": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "ready",
+        "failed"
+      ],
+      "title": "collection_status",
+      "description": "Poll again for pending, retrieve the ZIP for ready, and stop for failed."
     }
   },
   "required": [
-    "has_processing_errors"
+    "has_processing_errors",
+    "collection_status"
   ]
 }

@@ -1,124 +1,53 @@
+# Browser forensics with Falcon Fusion SOAR and Hindsight
 
+Use an on-demand Fusion workflow to collect browser artifacts from the signed-in user on a Windows endpoint. Real Time Response (RTR) stages Hindsight and starts processing. Fusion can release the launch action while Hindsight works, poll for a verified archive, and retrieve it through **Get file**. The repository supplies the endpoint actions and JSON schemas. The workflow owner configures the orchestration and notification bindings in Falcon.
 
-# 🕵️‍♂️ Hindsight Forensic Workflow
+## Run a collection
 
-This repository provides a modular, fully automated forensic analysis pipeline designed for use with **CrowdStrike Falcon Real Time Response (RTR)**. It leverages **Hindsight**, an open-source browser artifact parser, to extract, convert, and collect browser history from remote Windows endpoints — with real-time visibility via **Slack alerts**.
+Choose the sensor, browser and output format. Supply the optional number of days to select profiles by the last modification of their Chromium `History` file.
 
-Ideal for:
-- Digital forensic analysts conducting targeted history captures
-- SOC engineers building adaptive incident response playbooks
-- Threat hunters pivoting off browser-based behavior
+```json
+{
+  "deviceID": "0123456789abcdef0123456789abcdef",
+  "selected_browser": "Google Chrome",
+  "output_format": "jsonl",
+  "profile_history_days": 7
+}
+```
 
----
+| Input | Accepted values | Effect |
+| --- | --- | --- |
+| `deviceID` | Falcon sensor ID | Target of the RTR actions |
+| `selected_browser` | `Google Chrome`, `Microsoft Edge`, `Brave` | User data directory to search |
+| `output_format` | `xlsx`, `jsonl`, `sqlite` | One Hindsight output per selected profile |
+| `profile_history_days` | Optional positive integer | Include profiles whose `History` file was modified within the window, including the exact UTC cutoff |
 
-## ⚙️ Workflow Overview
+Omit the days field to process all discovered `Default` and `Profile N` directories for the selected browser. The window selects **whole profiles**. A qualifying profile can contain visits older than the window. SQLite can buffer recent writes in a separate journal file, so a stale database timestamp alone is insufficient evidence that a browser was idle. Use an unfiltered run if that distinction matters.
 
-[Follow the Falcon workflow and collection loop in two diagrams.](docs/workflow.md)
+## Configure Fusion
 
-This workflow is composed of six tightly integrated phases:
+1. Configure an on-demand trigger with [trigger-input.json](trigger-input.json). Use Get device details and require Windows before staging tools. The RTR policy and role need permissions to upload files, run the scripts and retrieve the archive.
+2. Register each numbered PowerShell script with its matching input and output JSON schemas. Supply the action input object as JSON through the script's `json_input` parameter. Keep script registrations and schemas together when versioning them.
+3. Have the upstream step choose a dedicated, access-controlled working directory for this execution. Pass it to preparation. Use a unique directory per execution on a shared host so simultaneous runs and late workers have independent lifetimes.
+4. On preparation success, use RTR Put file to place the verified `hindsight.exe` in the prepared directory. For the pinned v2026.11 Windows artifact the SHA-256 is `2e407bda175ebe6d1daec740a9b24507dcfb4d6a40f47caf6b729b2824ad1135`. Compare the staged upload source with `Get-FileHash -Algorithm SHA256`. [Hindsight release](https://github.com/RyanDFIR/hindsight/releases/tag/v2026.11)
+5. Map the inputs below. Branch on the status fields and gate retrieval on `ready`. The historical workflow used 15 attempts within 15 minutes. Inspect the deployed action and set the loop budget for the endpoint population. The action's timeout and Fusion's polling budget are separate settings. [Workflow diagrams and branch behavior](docs/workflow.md)
 
-1. **Platform Validation**  
-   - Automatically validates that the targeted device is online and running **Windows OS**
-   - Gathers hostname, platform type, and available tags from Falcon API
+| Action | Map from upstream | Consume downstream |
+| --- | --- | --- |
+| Preparation | `forensic_analysis_path` | On success use the returned path for the upload and processing. On error stop and report the messages. |
+| Processing | Working directory, staged executable path, system hostname, selected browser, format, optional days | `started` supplies `run_id`, `forensic_results`, and `analysis_timestamp`. A `no_match` result ends the run without retrieval. A `failed` result goes to the error branch. |
+| Collection | `run_id`, `forensic_results`, and `analysis_timestamp` from the same launch, plus `forensic_analysis_path`, `system_hostname`, and `selected_browser` | `pending` sleeps and retries collection. `failed` reports the error. Only `ready` supplies a verified `zip_file_path` for Get file. |
 
-2. **Tool Deployment**  
-   - Dynamically sets a custom working directory on the remote device (e.g., `C:\hindsight`)  
-   - Securely uploads `hindsight.exe` to that folder via RTR's **Put File**  
-   - Prepares any supporting environment variables or folders
+## Retrieval and recovery
 
-3. **Browser Artifact Extraction**  
-   - Executes a custom PowerShell script (`hindsight-processing.ps1`) on the endpoint  
-   - Extracts browser artifacts (Chrome, Edge, Brave) and converts to the chosen format:  
-     - `.xlsx` for easy analysis  
-     - `.jsonl` for structured parsing  
-     - `.sqlite` for raw queryability  
-   - Captures the browser profile names in use (for context)
+Retrieve the archive once, record the successful Get file result, then send a completion notification and clean up the execution directory. The operator can download the archive from the completed action in Falcon. Configure Slack with your tenant's connection. Keep notification failure distinct from retrieval failure so a messaging outage cannot discard the retrieval result.
 
-4. **Resilient Polling & Collection Loop**  
-   - Starts a **15-minute polling loop** (15 total attempts, 1 min max intervals)  
-   - If extraction succeeds: retrieves a ZIP archive of results  
-   - If a script exception occurs: Slack is notified, and retry logic is activated  
-   - Gracefully exits the loop once data is collected or time runs out
+On loop exhaustion or failed retrieval, record the run ID and working directory and retain outputs for recovery. A collection retry for a run must use its original expected file list. Starting processing again creates a new run. A timed-out worker may still be writing.
 
-5. **Artifact Retrieval & Cleanup**  
-   - Uses RTR’s **Get File** to fetch the packaged ZIP archive from the remote device  
-   - Deletes the temporary working directory and files used during execution  
+**Upgrade an existing workflow** by copying its action bindings to a new workflow version. Add the optional days mapping at the trigger and processing step, pass the run ID and result list to collection, and wire the status branches. Let earlier executions finish against their original collector. A list of paths from the historical processor lacks the completion information required by this collector. The [original workflow and screenshots](https://github.com/alexandruhera/crowdstrike-hindsight-soar/blob/7bf009c/README.md) remain available for comparison.
 
-6. **Slack Notification System**  
-   - Sends Slack alerts at key stages:
-     - **Run Initiation** – who ran the workflow and what inputs were selected  
-     - **Exception Alerts** – if Hindsight or the preparation step fails  
-     - **Completion Report** – device name, user email, ZIP filename, and success flag
+## Verification
 
----
+Use the repository's Windows tests for the script entry points, file timestamps, asynchronous completion and generated archives. On a Falcon-managed test endpoint, verify a filtered run, an unfiltered run, no matches, a failed worker, loop exhaustion and failed retrieval before enabling the revised bindings. Check the signed-in identity, script policy, Slack result and cleanup order in that tenant. The diagrams document the bindings to configure. A Falcon workflow export is tenant-specific.
 
-## 🧠 Why This Design Works
-
-- **Self-healing reliability** – Built-in conditional checks and looping ensure success even on first-time setup or slow endpoints  
-- **Zero hardcoding** – Paths, formats, and browsers are fully parameterized using workflow variables  
-- **Plug-and-play** – Can be invoked manually or embedded as a module within broader DFIR playbooks  
-- **Operator-aware** – All Slack messages include runner identity and device metadata  
-
----
-
-## ✅ Prerequisites
-
-Make sure the following are set up prior to execution:
-
-- CrowdStrike Falcon RTR access (with file upload & script execution permissions)  
-- A Slack App with a webhook URL and appropriate channel permissions  
-- Local copy of `hindsight.exe` (from [obsidianforensics](https://github.com/obsidianforensics/hindsight/releases))  
-
----
-
-## 🔧 Trigger Parameters
-
-These inputs define the scope and output of each run:
-
-| Parameter           | Description                                       | Required | Example         |
-|--------------------|---------------------------------------------------|----------|-----------------|
-| `deviceID`         | CrowdStrike Sensor ID                | ✅       | A1B2C3D4E5F6... |
-| `selected_browser` | Target browser (`Google Chrome`, `Microsoft Edge`, `Brave`) | ✅ | Google Chrome   |
-| `output_format`    | Output format (`xlsx`, `jsonl`, `sqlite`)         | ✅       | xlsx            |
-
----
-
-## 📬 Slack Integration
-
-Slack updates are sent via webhook and include:
-
-- 📥 **Trigger Summary** – Who initiated the workflow and selected parameters  
-- ⚠️ **Error Notices** – Clearly formatted exception output from PowerShell scripts  
-- ✅ **Completion Report** – Includes device hostname, ZIP filename, and sensor tags  
-
----
-
-## ✨ Contributors
-
-Crafted by [@Alexandru Hera](https://www.linkedin.com/in/alexandruhera), with a passion for delivering fast, auditable forensic tooling that integrates tightly with the CrowdStrike ecosystem.
-
----
-
-## 🛠️ Acknowledgements
-
-- [CrowdStrike Falcon RTR](https://www.crowdstrike.com)  
-- [Hindsight by obsidianforensics](https://github.com/obsidianforensics/hindsight)
-
----
-
-Example:
-
-![image](https://github.com/user-attachments/assets/950b47e0-3959-4627-a3d1-c9df08400979)
-
-
-![hind11](https://github.com/user-attachments/assets/ec2452e9-c503-460a-a0e4-4777755b65d4)
-
-![hind12](https://github.com/user-attachments/assets/385575a4-0480-46f0-ba74-76ba2ec5f374)
-
-![image](https://github.com/user-attachments/assets/517bfd0b-2fbc-47ff-97d1-5814e32ae646)
-
-
-![hind16](https://github.com/user-attachments/assets/20e18ed6-fd69-4de0-ace0-78411486a042)
-![hind15](https://github.com/user-attachments/assets/2930ad99-84bd-4fec-a5b2-2398f3c096a6)
-![hind14](https://github.com/user-attachments/assets/94d1dc94-8961-44e8-bb30-01d4e48f2a62)
-![hind17](https://github.com/user-attachments/assets/92b4e455-aac2-448e-b31f-7235f8ffd3c1)
+Created by [Alexandru Hera](https://www.linkedin.com/in/alexandruhera) using [Hindsight](https://github.com/RyanDFIR/hindsight) and [CrowdStrike RTR](https://developer.crowdstrike.com/foundry/logic-capabilities/rtr-scripts/).

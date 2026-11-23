@@ -28,6 +28,12 @@
       "type": "string",
       "title": "system_hostname",
       "description": "Hostname of the system on which the analysis is performed."
+    },
+    "profile_history_days": {
+      "type": "integer",
+      "minimum": 1,
+      "title": "Profile history age in days",
+      "description": "Optional. Select profiles whose History file was modified within this many days (UTC). Omit to include all candidate profiles. Selected profiles may contain older visits."
     }
   },
   "required": [
