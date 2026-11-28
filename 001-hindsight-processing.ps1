@@ -2,111 +2,184 @@ param (
     [string]$json_input
 )
 
-$json_data = $json_input | ConvertFrom-Json
-$forensic_analysis_path = $json_data.forensic_analysis_path
-$forensic_tool_path = $json_data.forensic_tool_path
-$output_format = $json_data.output_format
-$selected_browser = $json_data.selected_browser
-$system_hostname = $json_data.system_hostname
+$ErrorActionPreference = 'Stop'
 
-$browser_profile_names = @()
-$browser_profile_paths = @()
-$resolved_user_data_path = $null
-$analysis_timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH-mm")
-$forensic_results = @()
+# This standalone worker is written into the prepared case directory so it can
+# outlive the RTR action. Its input is data in the child process environment.
+$worker = {
+    $ErrorActionPreference = 'Stop'
+    $job = $env:HINDSIGHT_PROFILE_JOB | ConvertFrom-Json
+    $result = "$($job.output_base).$($job.format)"
+    $marker = @{ run_id = $job.run_id; status = 'failed' }
+    try {
+        $cliArgs = @('-i', $job.profile, '-o', $job.output_base, '-f', $job.format, '-t', 'UTC')
+        # Windows PowerShell can turn redirected native stderr into error records.
+        # Hindsight's exit code determines whether it finished successfully.
+        $ErrorActionPreference = 'Continue'
+        & $job.tool @cliArgs *> $null
+        $exitCode = $LASTEXITCODE
+        $ErrorActionPreference = 'Stop'
+        if ($exitCode -ne 0) { throw "Hindsight exited with code $exitCode." }
+        if (-not [IO.File]::Exists($result)) { throw 'Hindsight did not create its expected output file.' }
 
-$has_processing_errors = $false
-$exception_messages = @()
+        switch ($job.format) {
+            'jsonl' {
+                $reader = [IO.File]::OpenText($result)
+                try {
+                    # Zero lines is valid when a profile contains no artifact records.
+                    while ($null -ne ($line = $reader.ReadLine())) {
+                        if (-not $line.TrimStart().StartsWith('{')) { throw 'Invalid JSONL record.' }
+                        $null = ConvertFrom-Json -InputObject $line -ErrorAction Stop
+                    }
+                } finally { $reader.Dispose() }
+            }
+            'sqlite' {
+                $stream = [IO.File]::OpenRead($result)
+                try {
+                    $header = New-Object byte[] 16
+                    $bytes = $stream.Read($header, 0, $header.Length)
+                    if ($bytes -ne 16 -or $stream.Length -lt 100 -or
+                        [Text.Encoding]::ASCII.GetString($header) -cne "SQLite format 3`0") {
+                        throw 'Invalid SQLite header.'
+                    }
+                } finally { $stream.Dispose() }
+            }
+            'xlsx' {
+                Add-Type -AssemblyName System.IO.Compression.FileSystem
+                $archive = [IO.Compression.ZipFile]::OpenRead($result)
+                try {
+                    if (-not $archive.GetEntry('[Content_Types].xml') -or -not $archive.GetEntry('xl/workbook.xml')) {
+                        throw 'Invalid XLSX workbook.'
+                    }
+                } finally { $archive.Dispose() }
+            }
+        }
+        $marker.status = 'ready'
+    } catch {
+        $marker.message = $_.Exception.Message
+    }
 
-$browser_paths = @{
-    "Google Chrome" = "AppData\Local\Google\Chrome\User Data"
-    "Microsoft Edge" = "AppData\Local\Microsoft\Edge\User Data"
-    "Brave" = "AppData\Local\BraveSoftware\Brave-Browser\User Data"
+    $statusPath = "$result.status.json"
+    $tempPath = "$statusPath.$PID.tmp"
+    [IO.File]::WriteAllText($tempPath, ($marker | ConvertTo-Json -Compress))
+    [IO.File]::Move($tempPath, $statusPath)
 }
 
-# Resolve the interactive user's profile because RTR runs under a separate account.
 try {
-    $current_user = (Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).UserName -replace '^.+\\', ''
-    $user_profile_path = (Get-CimInstance Win32_UserProfile -ErrorAction Stop | Where-Object { $_.LocalPath -like "*\$current_user" }).LocalPath
+    $inputData = ConvertFrom-Json -InputObject $json_input
+    $paths = @{
+        'Google Chrome'  = 'AppData/Local/Google/Chrome/User Data'
+        'Microsoft Edge' = 'AppData/Local/Microsoft/Edge/User Data'
+        'Brave'          = 'AppData/Local/BraveSoftware/Brave-Browser/User Data'
+    }
+    $browser = $inputData.selected_browser
+    $format = $inputData.output_format
+    $hostname = $inputData.system_hostname
+    if (-not $paths.ContainsKey($browser)) { throw 'Unsupported browser.' }
+    if ($format -cnotin @('jsonl', 'sqlite', 'xlsx')) { throw 'Unsupported output format.' }
+    if ($hostname -notmatch '^[a-zA-Z0-9_.-]+$') { throw 'Invalid system hostname.' }
 
-    if (-not (Test-Path $user_profile_path)) {
-        throw "The user's local profile path does not exist: $user_profile_path"
+    $now = (Get-Date).ToUniversalTime()
+    $cutoff = $null
+    if ($inputData.PSObject.Properties['profile_history_days']) {
+        $days = $inputData.profile_history_days
+        if (($days -isnot [int] -and $days -isnot [long]) -or $days -lt 1) {
+            throw 'profile_history_days must be a positive integer.'
+        }
+        $cutoff = $now.AddDays(-$days)
+    }
+
+    # RTR executes separately from the interactive user's session.
+    $interactive = (Get-CimInstance Win32_ComputerSystem).UserName
+    if ($interactive -notmatch '^([^\\]+)\\([^\\]+)$') { throw 'Could not identify a domain-qualified interactive Windows user.' }
+    $domain = $Matches[1]
+    $name = $Matches[2]
+    # Both values originate from Windows. Escape quotes for a WQL string literal.
+    $domainFilter = $domain.Replace("'", "\'")
+    $nameFilter = $name.Replace("'", "\'")
+    $accounts = @(Get-CimInstance Win32_UserAccount -Filter "Domain = '$domainFilter' AND Name = '$nameFilter'" |
+        Where-Object { $_.Domain -eq $domain -and $_.Name -eq $name })
+    if ($accounts.Count -ne 1 -or $accounts[0].SID -notmatch '^S-1-\d+(?:-\d+)+$') {
+        throw "Could not resolve a unique Windows SID for $interactive."
+    }
+    $sid = $accounts[0].SID
+    $userProfiles = @(Get-CimInstance Win32_UserProfile -Filter "SID = '$sid'" |
+        Where-Object { $_.SID -eq $sid -and $_.LocalPath })
+    if ($userProfiles.Count -ne 1) { throw "Could not resolve a unique local profile for $interactive ($sid)." }
+    $browserRoot = Join-Path $userProfiles[0].LocalPath $paths[$browser]
+    $profiles = @(foreach ($entry in (Get-ChildItem -LiteralPath $browserRoot -Directory)) {
+        if ($entry.Name -notmatch '^(Default|Profile\s\d+)$') { continue }
+        if ($null -ne $cutoff) {
+            $historyPath = Join-Path $entry.FullName 'History'
+            try {
+                $history = Get-Item -LiteralPath $historyPath -Force -ErrorAction Stop
+            } catch [System.Management.Automation.ItemNotFoundException] {
+                continue
+            }
+            if ($history.PSIsContainer -or $history.LastWriteTimeUtc -lt $cutoff) { continue }
+        }
+        $entry
+    })
+
+    $runId = [guid]::NewGuid().ToString('N')
+    $timestamp = $now.ToString('yyyy-MM-ddTHH-mm')
+    $response = [ordered]@{
+        processing_status     = 'no_match'
+        has_processing_errors = $false
+        run_id                = $runId
+        analysis_timestamp    = $timestamp
+        user_data_path        = $browserRoot
+        browser_profile_names = @($profiles | ForEach-Object { $_.Name })
+        browser_profile_paths = @($profiles | ForEach-Object { $_.FullName })
+        forensic_results      = @()
+    }
+
+    if ($profiles.Count -gt 0) {
+        $directory = Get-Item -LiteralPath $inputData.forensic_analysis_path
+        $tool = Get-Item -LiteralPath $inputData.forensic_tool_path
+        if (-not $directory.PSIsContainer -or $tool.PSIsContainer -or $tool.Name -ine 'hindsight.exe' -or
+            $tool.Directory.FullName -ine $directory.FullName -or ($tool.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw 'Expected the deployed hindsight.exe in the prepared working directory.'
+        }
+        if ([Environment]::OSVersion.Platform -eq 'Win32NT' -and (Get-ExecutionPolicy) -in @('AllSigned', 'Restricted')) {
+            throw 'Endpoint execution policy prevents starting the locally generated Hindsight worker.'
+        }
+        $workerPath = Join-Path $directory.FullName "hindsight-worker-$runId.ps1"
+        [IO.File]::WriteAllText($workerPath, $worker.ToString())
+        $shell = if ($PSVersionTable.PSEdition -eq 'Desktop') { 'powershell.exe' }
+            elseif ([Environment]::OSVersion.Platform -eq 'Win32NT') { 'pwsh.exe' }
+            else { 'pwsh' }
+        foreach ($profile in $profiles) {
+            $profileName = $profile.Name -replace '\s', '-'
+            $browserName = $browser -replace '\s', '-'
+            $outputBase = Join-Path $directory.FullName "$hostname-$browserName-$profileName-$timestamp-$runId"
+            $job = @{ tool = $tool.FullName; profile = $profile.FullName; output_base = $outputBase; format = $format; run_id = $runId }
+            $start = New-Object Diagnostics.ProcessStartInfo
+            $start.FileName = Join-Path $PSHOME $shell
+            $start.Arguments = '-NoLogo -NoProfile -NonInteractive -File "' + $workerPath + '"'
+            $start.WorkingDirectory = $directory.FullName
+            $start.UseShellExecute = $false
+            $start.CreateNoWindow = $true
+            $start.EnvironmentVariables['HINDSIGHT_PROFILE_JOB'] = ($job | ConvertTo-Json -Compress)
+            # Give the detached child its own pipes so it cannot hold RTR stdout open.
+            $start.RedirectStandardOutput = $true
+            $start.RedirectStandardError = $true
+            try {
+                $child = [Diagnostics.Process]::Start($start)
+                $child.Dispose()
+            } catch {
+                throw "Could not start the Hindsight worker for $($profile.Name) (run $runId): $($_.Exception.Message)"
+            }
+            $response.forensic_results += "$outputBase.$format"
+        }
+        $response.processing_status = 'started'
     }
 } catch {
-    $exception_messages += $_.Exception.Message
-}
-
-$has_processing_errors = [bool]($exception_messages.Count)
-
-if (-not $has_processing_errors) {
-    try {
-        $browser_user_data_path = Join-Path -Path $user_profile_path -ChildPath $browser_paths[$selected_browser]
-
-        if (-not (Test-Path $browser_user_data_path)) {
-            throw "The selected browser's data path does not exist: $browser_user_data_path"
-        }
-
-        $resolved_user_data_path = $browser_user_data_path
-    } catch {
-        $exception_messages += "An error occurred when checking the browser profiel path $_.Exception.Message"
+    $response = [ordered]@{
+        processing_status     = 'failed'
+        has_processing_errors = $true
+        exception_messages    = @($_.Exception.Message)
     }
 }
 
-$has_processing_errors = [bool]($exception_messages.Count)
-
-if (-not $has_processing_errors) {
-    try {
-        $detected_profiles = Get-ChildItem -Path $resolved_user_data_path -Directory | Where-Object { $_.Name -match '^Default$|^Profile\s\d+$' }
-
-        foreach ($profile_entry in $detected_profiles) {
-            $browser_profile_names += $profile_entry.Name
-            $browser_profile_paths += $profile_entry.FullName
-        }
-    } catch {
-        $exception_messages += "An error ocurred when attempting to the browser profile path $_.Exception.Message"
-    }
-}
-
-$has_processing_errors = [bool]($exception_messages.Count)
-if (-not $has_processing_errors) {
-    foreach ($index in 0..($browser_profile_names.Count - 1)) {
-        $source_profile_path = $browser_profile_paths[$index]
-        $cleaned_profile_name = $browser_profile_names[$index] -replace "\s", "-"
-        $cleaned_browser_name = $selected_browser -replace "\s", "-"
-        $cleaned_forensic_tool_path = $forensic_tool_path -replace "/", "\"
-
-        $forensic_output_base = Join-Path $forensic_analysis_path "${system_hostname}-${cleaned_browser_name}-${cleaned_profile_name}-${analysis_timestamp}"
-        $forensic_output_path = "$forensic_output_base.$output_format"
-
-        try {
-            # Start Hindsight asynchronously so Fusion can poll for its output.
-            Start-Process -FilePath $cleaned_forensic_tool_path `
-                -ArgumentList "-i `"$source_profile_path`" -o `"$forensic_output_base`" -f $output_format -t UTC" `
-                -NoNewWindow
-
-            $forensic_results += $forensic_output_path
-        } catch {
-            $exception_messages += $_.Exception.Message
-        }
-    }
-}
-
-$has_processing_errors = [bool]($exception_messages.Count)
-
-if ($has_processing_errors) {
-    $json_output = [PSCustomObject]@{
-        "has_processing_errors" = $has_processing_errors
-        "exception_messages" = $exception_messages
-    }
-} else {
-    $json_output = [PSCustomObject]@{
-        "has_processing_errors" = $has_processing_errors
-        "user_data_path" = $resolved_user_data_path
-        "browser_profile_names" = $browser_profile_names
-        "browser_profile_paths" = $browser_profile_paths
-        "forensic_results" = $forensic_results
-        "analysis_timestamp" = $analysis_timestamp
-    }
-}
-
-$json_output | ConvertTo-Json -Depth 2
+$response | ConvertTo-Json -Depth 3 -Compress

@@ -26,6 +26,12 @@
       "type": "string",
       "title": "Browser Selection",
       "default": "Google Chrome"
+    },
+    "profile_history_days": {
+      "type": "integer",
+      "minimum": 1,
+      "title": "Profile history age in days",
+      "description": "Optional. Select profiles whose History file was modified within this many days (UTC). Omit to include all candidate profiles. Selected profiles may contain older visits."
     }
   },
   "required": [

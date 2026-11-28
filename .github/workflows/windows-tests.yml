@@ -1,0 +1,58 @@
+name: Windows workflow tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  workflow:
+    name: Windows / ${{ matrix.shell }}
+    runs-on: windows-2022
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shell: [powershell, pwsh]
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Install test readers and check Fusion schemas
+        run: |
+          python -m pip install jsonschema==4.26.0 openpyxl==3.1.5
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/test_schemas.py
+
+      - name: Observe open and closed Chrome profile timestamps
+        if: matrix.shell == 'pwsh'
+        run: |
+          python -m pip install playwright==1.62.0
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/probe_history_timestamp.py
+
+      - name: Fetch and verify Hindsight v2026.11
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          $url = 'https://github.com/RyanDFIR/hindsight/releases/download/v2026.11/hindsight.exe'
+          $binary = Join-Path $env:RUNNER_TEMP 'hindsight.exe'
+          Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $binary
+          $expected = '2e407bda175ebe6d1daec740a9b24507dcfb4d6a40f47caf6b729b2824ad1135'
+          if ((Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash -ne $expected) {
+              throw 'Hindsight release checksum mismatch.'
+          }
+          "HINDSIGHT_SMOKE_EXE=$binary" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Run unit and real binary smoke tests
+        run: |
+          Install-Module -Name Pester -RequiredVersion 5.7.1 -Scope CurrentUser -Force -SkipPublisherCheck
+          Import-Module Pester -RequiredVersion 5.7.1
+          $result = Invoke-Pester -Path ./tests -Output Detailed -PassThru
+          if ($result.Result -ne 'Passed' -or $result.SkippedCount -gt 0) { exit 1 }
