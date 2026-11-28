@@ -54,7 +54,7 @@ This workflow is composed of six tightly integrated phases:
 
 ## 🧠 Why This Design Works
 
-- **Self-healing reliability** – Built-in conditional checks and looping ensure success even on first-time setup or slow endpoints  
+- **Bounded polling** – Collection retries while processing is active and checks the ZIP before returning its path
 - **Zero hardcoding** – Paths, formats, and browsers are fully parameterized using workflow variables  
 - **Plug-and-play** – Can be invoked manually or embedded as a module within broader DFIR playbooks  
 - **Operator-aware** – All Slack messages include runner identity and device metadata  
@@ -62,6 +62,8 @@ This workflow is composed of six tightly integrated phases:
 ---
 
 ## ✅ Prerequisites
+
+Deploy the three PowerShell scripts together and configure a fresh working directory for each run. See the [workflow guide](docs/workflow.md#deploying-the-revised-scripts) for the Fusion settings to verify.
 
 Make sure the following are set up prior to execution:
 

@@ -2,6 +2,12 @@
 
 An analyst starts an on-demand Falcon Fusion workflow for one sensor, browser and output format. Fusion chooses the working directory, runs short RTR actions on the Windows endpoint, and polls for the results. Hindsight runs asynchronously so a large browser profile can continue processing after the RTR launch action returns. The diagrams describe the published June 2025 workflow. [Source revision](https://github.com/alexandruhera/crowdstrike-hindsight-soar/tree/7bf009c) · [Trigger inputs](../trigger-input.json)
 
+## Deploying the revised scripts
+
+Update preparation, processing and collection together. Processing records the Hindsight processes it launches in the run directory. Collection expects that record, waits for the recorded processes to exit, and checks the ZIP entries before returning its path. Process exit and archive checks do not establish Hindsight's exit code after the launch script has returned.
+
+Assign each run a fresh working directory in Fusion and use the path returned by preparation for every later step, including cleanup. Preparation rejects an existing directory. Gate retrieval on an explicit successful collection result with a ZIP path. Verify the timeout branch and the cleanup target in the deployed Fusion workflow.
+
 ## From trigger to retrieval
 
 ```mermaid
