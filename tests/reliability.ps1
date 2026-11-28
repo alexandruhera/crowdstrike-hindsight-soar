@@ -15,8 +15,8 @@ function Assert-Case($name, [scriptblock]$test) {
 }
 
 try {
-    $prep = Join-Path $repo '001-hindsight-preparation.ps1'
-    $collect = Join-Path $repo '001-hindsight-collection.ps1'
+    $prep = Join-Path $repo 'scripts/prepare.ps1'
+    $collect = Join-Path $repo 'scripts/collect.ps1'
     $directory = Join-Path $root 'run'
     $prepInput = @{ forensic_analysis_path = $directory } | ConvertTo-Json -Compress
     $result = & $prep $prepInput | ConvertFrom-Json
@@ -31,7 +31,7 @@ try {
         }
     }
 
-    $processing = Join-Path $repo '001-hindsight-processing.ps1'
+    $processing = Join-Path $repo 'scripts/process.ps1'
     $userProfile = Join-Path $root 'test-user'
     $browserData = Join-Path $userProfile 'AppData/Local/Google/Chrome/User Data'
     $null = New-Item -Path $browserData -ItemType Directory -Force
