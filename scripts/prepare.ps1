@@ -9,7 +9,15 @@ try {
         throw 'A working directory is required.'
     }
 
-    # An existing directory may belong to another run. Leave it intact.
+    $fullPath = [IO.Path]::GetFullPath($analysisPath)
+    if ($fullPath -eq [IO.Path]::GetPathRoot($fullPath)) {
+        throw 'The working directory cannot be a filesystem root.'
+    }
+
+    # Reset the dedicated run directory before staging Hindsight.
+    if (Test-Path -LiteralPath $analysisPath -ErrorAction Stop) {
+        Remove-Item -LiteralPath $analysisPath -Recurse -Force -ErrorAction Stop
+    }
     $null = New-Item -Path $analysisPath -ItemType Directory -ErrorAction Stop
     $result = @{
         has_processing_errors = $false

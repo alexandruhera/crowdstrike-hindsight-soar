@@ -22,12 +22,16 @@ try {
     $result = & $prep $prepInput | ConvertFrom-Json
     if ($result.has_processing_errors) { throw 'Initial preparation failed' }
 
-    Assert-Case 'Existing directory is protected' {
-        $sentinel = Join-Path $directory 'evidence.txt'
-        Set-Content -LiteralPath $sentinel -Value 'preserve'
+    Assert-Case 'Preparation recreates a clean directory' {
+        $nested = Join-Path $directory 'previous-run'
+        $null = New-Item -Path $nested -ItemType Directory
+        Set-Content -LiteralPath (Join-Path $nested 'old-report.txt') -Value 'old'
+        Set-Content -LiteralPath (Join-Path $directory 'old-tool.exe') -Value 'old'
         $result = & $prep $prepInput | ConvertFrom-Json
-        if (!$result.has_processing_errors -or !(Test-Path -LiteralPath $sentinel)) {
-            throw 'Preparation must report a conflict and preserve the existing file'
+        if ($result.has_processing_errors -or $result.forensic_analysis_path -ne $directory -or
+            !(Test-Path -LiteralPath $directory -PathType Container) -or
+            @(Get-ChildItem -LiteralPath $directory -Force).Count) {
+            throw 'Preparation must return the recreated, empty directory'
         }
     }
 

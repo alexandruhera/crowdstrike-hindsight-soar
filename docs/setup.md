@@ -22,8 +22,8 @@ The repository supplies scripts and schemas. Assemble the Fusion actions in your
 
 ## Wire the actions
 
-1. Look up the sensor and require an online Windows endpoint. Supply a fresh absolute working-directory path for each run, including simultaneous runs for the same sensor.
-2. Pass the directory to Prepare. After it succeeds, use the returned `forensic_analysis_path` for the rest of the run. Use RTR Put File to stage `hindsight.exe` in that directory.
+1. Look up the sensor and require an online Windows endpoint. Supply an absolute path dedicated to this workflow. Sequential runs can reuse it. Give overlapping runs on the same endpoint separate paths.
+2. Pass the directory to Prepare. Prepare deletes any existing contents and recreates the directory. After it succeeds, use the returned `forensic_analysis_path` for the rest of the run. Use RTR Put File to stage `hindsight.exe` in that directory.
 3. Pass the directory, the staged executable's full path, the Falcon hostname, and the selected browser and format to Process. Start polling only after Process returns `has_processing_errors: false`.
 4. Pass the directory, hostname, browser, and the Process outputs `forensic_results` and `analysis_timestamp` to Collect. The published workflow used a limit of 15 attempts and 15 minutes. On exhaustion, report a timeout and skip retrieval. Only run RTR Get File when Collect returns `has_processing_errors: false` and a `zip_file_path`.
 5. After retrieval succeeds, report completion and clean up the directory returned by Prepare. On failure, decide whether the run directory is needed for investigation before removing it. If Slack is configured, route launch, failure, and retrieval outcomes to the appropriate channel.

@@ -6,25 +6,55 @@ Fusion orchestrates RTR actions and keeps track of their outputs. The PowerShell
 
 ```mermaid
 flowchart TD
-    trigger["Select the sensor, browser, and output format"] --> prepare["Create the run directory on the Windows endpoint"]
-    prepare --> upload["Stage hindsight.exe using RTR"]
-    upload --> process["Launch Hindsight for each matching profile"]
-    process --> poll["Poll the collection script"]
-    poll -->|Verified ZIP path| retrieve["Retrieve the ZIP using RTR"]
-    poll -->|Attempts exhausted| timeout["Report a timeout"]
+    trigger["Select sensor, browser, and format"] --> prepare["Reset the working directory"]
+    prepare -->|Success| upload["Stage hindsight.exe through RTR"]
+    upload -->|Success| process["Launch Hindsight for each matching profile"]
+    process -->|Success| poll["Poll collection"]
+    prepare -->|Error| failed["Report the failed action"]
+    upload -->|Error| failed
+    process -->|Error| failed
+    poll -->|Retry permitted| poll
+    poll -->|Verified ZIP| retrieve["Retrieve the ZIP through RTR"]
+    poll -->|Attempts exhausted| timeout["Report timeout"]
     retrieve -->|Success| complete["Report completion and clean up"]
-    retrieve -->|Failure| failed["Report retrieval failure"]
+    retrieve -->|Error| failed
+
+    classDef endpoint fill:#dbeafe,stroke:#2563eb,color:#172554
+    classDef outcome fill:#dcfce7,stroke:#15803d,color:#14532d
+    classDef failure fill:#fee2e2,stroke:#b91c1c,color:#7f1d1d
+    class prepare,upload,process,poll,retrieve endpoint
+    class complete outcome
+    class failed,timeout failure
 ```
 
-[Processing](../scripts/process.ps1) finds the interactive Windows user's local profile and looks for browser directories named `Default` or `Profile <number>`. It launches Hindsight asynchronously and records each process with its expected output path. The launch response lists expected files. The run log and retrieval action show when an archive is available.
+## What each script does
 
-[Collection](../scripts/collect.ps1) checks the process records and waits for the recorded processes to exit across polling attempts. It checks for non-empty output files, creates a ZIP, and verifies the entries and their sizes before publishing the archive path. The collector cannot determine Hindsight's exit code after the launch action has returned. Open the reports in the first test run to validate their contents.
+### 1. Prepare the endpoint
+
+[Prepare](../scripts/prepare.ps1) takes `forensic_analysis_path`. If that path exists, it recursively removes it and its contents, then recreates the directory. It returns the path for subsequent actions. A reset or creation failure returns `has_processing_errors: true` and `exception_messages`.
+
+> [!IMPORTANT]
+> Use a directory dedicated to Hindsight. Sequential runs can reuse it. Overlapping runs on the same endpoint need separate directories because preparation clears everything at the supplied path.
+
+### 2. Launch Hindsight
+
+[Process](../scripts/process.ps1) validates the browser, output format, and hostname. It resolves the interactive Windows user's local profile and looks for browser directories named `Default` or `Profile <number>`. It launches one Hindsight process per matching profile with UTC output and records the process ID, start time, and expected output path in `hindsight-<analysis_timestamp>.json`.
+
+Fusion gets the profile names and paths, the expected `forensic_results`, and the `analysis_timestamp`. The result describes what was launched. Collection checks those expected paths against the process record.
+
+### 3. Verify and retrieve the ZIP
+
+[Collect](../scripts/collect.ps1) performs one check per Fusion poll. It verifies that the process record matches the expected files, that none of the recorded processes is still running, and that every expected file exists and is non-empty. The process start time helps distinguish Hindsight from a different process that reused its ID.
+
+The collector builds a temporary ZIP, verifies its entry count, names, and sizes, then moves it to the final path. Fusion can start RTR Get File when collection returns `has_processing_errors: false` and a `zip_file_path`. On an unsuccessful attempt, use `exception_messages` to diagnose the result. After the polling limit, report a timeout.
+
+The collector cannot determine Hindsight's exit code after the launch action returns. Confirm that the reports open and contain the expected data during the first Windows test run.
 
 ## Troubleshooting
 
 | Symptom | Where to look |
 | --- | --- |
-| Preparation rejects the directory | Check that Fusion generated a fresh path. A directory left by an earlier run can contain evidence. |
+| Preparation fails to reset the directory | Read `exception_messages`. Check the configured path, RTR permissions, and whether an open file is preventing removal. |
 | Process reports no interactive user or matching profiles | Check for a signed-in user on the selected sensor and confirm the selected browser has a supported profile under that user's local profile. |
 | Process fails to launch Hindsight | Read `exception_messages` and confirm the Put File action staged the expected executable at `forensic_tool_path`. |
 | Collection keeps polling | Read the latest `exception_messages`. A recorded process can still be active, or an output file can be absent or empty. A missing process record can indicate scripts from different revisions. |
